@@ -319,6 +319,30 @@ QListWidget::item:selected {{
     background: rgba(91, 124, 250, 0.20);
     color: {TEXT};
 }}
+QMenu {{
+    background: {CARD};
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+    padding: 6px;
+}}
+QMenu::item {{
+    padding: 7px 22px 7px 14px;
+    border-radius: 6px;
+    color: {TEXT};
+    background: transparent;
+}}
+QMenu::item:selected {{
+    background: rgba(91, 124, 250, 0.22);
+    color: {TEXT};
+}}
+QMenu::item:disabled {{
+    color: {MUTED};
+}}
+QMenu::separator {{
+    height: 1px;
+    background: {BORDER};
+    margin: 5px 8px;
+}}
 """
 
 

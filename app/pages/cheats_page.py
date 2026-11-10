@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..core import cheats, eden
+from ..core import cheats, eden, prefs
 from ..dialogs import confirm, error, info
 from ..widgets import Badge, Card, ElidedLabel
 from .base import Page
@@ -160,7 +160,8 @@ class CheatsPage(Page):
             pass
         for tid in cheats.game_ids_with_data():
             titles.setdefault(tid, "")
-        self._games = [(tid, titles.get(tid) or f"游戏 {tid}") for tid in titles]
+        cfg = self.state.cfg
+        self._games = [(tid, prefs.display_title(cfg, tid, titles.get(tid) or "")) for tid in titles]
 
         current = self.current_tid()
         self.combo_game.blockSignals(True)

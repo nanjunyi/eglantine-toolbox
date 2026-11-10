@@ -25,8 +25,19 @@ ROM_EXTS = {".nsp", ".xci", ".nup", ".nsz", ".xcz"}
 PSEUDO_DIRS = {"sdmc", "usernand", "sysnand"}
 SKIP_DIR_HINTS = ("firmware", "cache", "contents", "registered", "placehld")
 
+# 扫描结果的结构版本：字段/规则一变就 +1，让旧 gamelist.json 自动失效
+SCHEMA = 2
+CACHE_TTL = 300  # 秒；子目录里加文件不会改父目录 mtime，只能靠 TTL 兜一下
+
 _TID = re.compile(r"\[([0-9A-Fa-f]{16})\]")
 _TID16 = re.compile(r"^[0-9A-Fa-f]{16}$")
+# 日志里最干净的来源：``Loading HWAoI (04003F40232DE000) ...``
+_LOG_LOAD = re.compile(r"Loading (.+?) \(([0-9A-Fa-f]{16})\)")
+# 备选：``Booting game: 04003F40232DE000 | HWAoI (64 位) |``
+_LOG_BOOT = re.compile(r"Booting game:\s*([0-9A-Fa-f]{16})\s*\|\s*([^|]+)")
+_ARCH = re.compile(r"\s*\((?:64|32)\s*位\)\s*$")
+_names_cache: dict[str, str] = {}
+_names_stamp = ""
 
 
 # --------------------------------------------------------------------------- 配置
@@ -153,6 +164,9 @@ class Game:
     others: list[RomFile] = field(default_factory=list)
     play_time: int = 0
     last_played: int = 0
+    # 是否被模拟器自己识别过（pv 缓存 / 启动记录 / 游玩时长 / 日志）。
+    # 只在 load_games() 返回后赋值，**不写进缓存**，否则每玩一个新游戏缓存就失效。
+    recognized: bool = False
 
     @property
     def size(self) -> int:
@@ -291,6 +305,75 @@ def play_times() -> dict[str, int]:
     return out
 
 
+def title_names_from_log() -> dict[str, str]:
+    """从模拟器日志里挖 TitleID → 名字。
+
+    ``core\\core.cpp: Loading HWAoI (04003F40232DE000) ...`` 是最干净的来源；
+    退一步用 ``Booting game: 04003F40232DE000 | HWAoI (64 位) |``。
+    文件名不带 TitleID 的游戏（.nup）只能靠这个拿到名字。
+    """
+    global _names_cache, _names_stamp
+    folder = log_dir()
+    paths: list[Path] = []
+    stamp: list[str] = []
+    for name in ("eden_log.txt.old.txt", "eden_log.txt"):
+        path = folder / name
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        paths.append(path)
+        stamp.append(f"{name}:{st.st_size}:{int(st.st_mtime)}")
+    key = "|".join(stamp)
+    if key == _names_stamp:
+        return _names_cache
+
+    out: dict[str, str] = {}
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        for line in text.splitlines():
+            hit = _LOG_LOAD.search(line)
+            if hit:
+                name = hit.group(1).strip()
+                if name:
+                    out[hit.group(2).upper()] = name
+                continue
+            boot = _LOG_BOOT.search(line)
+            if boot:
+                name = _ARCH.sub("", boot.group(2)).strip()
+                if name:
+                    out[boot.group(1).upper()] = name
+    _names_cache, _names_stamp = out, key
+    return out
+
+
+def recognized_ids() -> set[str]:
+    """模拟器自己“见过”的 TitleID 集合。
+
+    四个来源取并集：``cache\\game_list\\<tid>.pv.txt``（文件存在即算，内容可能是空的）、
+    ``cache\\launched.json`` 的键、``play_time`` 里时长 > 0 的、日志里出现过的。
+    """
+    ids: set[str] = set()
+    try:
+        for path in (data_root() / "cache" / "game_list").glob("*.pv.txt"):
+            name = path.name.split(".")[0].upper()
+            if _TID16.match(name):
+                ids.add(name)
+    except OSError:
+        pass
+    for tid in launched():
+        if _TID16.match(str(tid)):
+            ids.add(str(tid).upper())
+    for tid, secs in play_times().items():
+        if secs > 0:
+            ids.add(tid.upper())
+    ids.update(title_names_from_log().keys())
+    return ids
+
+
 def collect_games(roms: list[RomFile] | None = None) -> list[Game]:
     """把文件按 Base TitleID 合并成「一个游戏一行」。
 
@@ -308,7 +391,7 @@ def collect_games(roms: list[RomFile] | None = None) -> list[Game]:
 
     for rom in roms:
         if not rom.title_id:
-            key = f"file:{rom.path}"
+            key = f"file:{str(rom.path).lower()}"
             game = games.setdefault(key, Game(key=key))
             game.others.append(rom)
             continue
@@ -381,9 +464,19 @@ def _cache_file() -> Path:
     return config_dir() / "gamelist.json"
 
 
+def _mark_recognized(games: list[Game]) -> list[Game]:
+    try:
+        ids = recognized_ids()
+    except Exception:
+        ids = set()
+    for game in games:
+        game.recognized = bool(game.title_id and game.title_id.upper() in ids)
+    return games
+
+
 def load_games(use_cache: bool = True) -> list[Game]:
     dirs = game_dirs()
-    stamp = []
+    stamp = [f"v{SCHEMA}"]
     for d in dirs:
         try:
             st = d.stat()
@@ -396,12 +489,18 @@ def load_games(use_cache: bool = True) -> list[Game]:
     if use_cache and cache.exists():
         try:
             raw = json.loads(cache.read_text(encoding="utf-8"))
-            if raw.get("key") == key:
-                return [_game_from_dict(item) for item in raw.get("games", [])]
+            fresh = time.time() - int(raw.get("at", 0)) < CACHE_TTL
+            if raw.get("key") == key and fresh:
+                games = [g for g in (_game_from_dict(i) for i in raw.get("games", [])) if g]
+                if games:
+                    return _mark_recognized(games)
         except Exception:
             pass
 
     games = collect_games()
+    if not games:
+        # 空结果不写缓存：网络盘掉线 / 权限异常时否则会永久返回空列表
+        return games
     try:
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(
@@ -413,7 +512,7 @@ def load_games(use_cache: bool = True) -> list[Game]:
         )
     except Exception:
         pass
-    return games
+    return _mark_recognized(games)
 
 
 def _game_to_dict(game: Game) -> dict:
@@ -443,8 +542,11 @@ def _game_to_dict(game: Game) -> dict:
 def _rom_from_dict(raw: dict | None) -> RomFile | None:
     if not raw:
         return None
+    path = raw.get("path")
+    if not path:
+        return None
     return RomFile(
-        path=Path(raw["path"]),
+        path=Path(path),
         title_id=raw.get("title_id", ""),
         kind=raw.get("kind", "unknown"),
         size=int(raw.get("size", 0)),

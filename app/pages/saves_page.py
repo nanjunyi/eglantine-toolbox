@@ -13,12 +13,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
-from ..core import eden, saves
+from ..core import eden, prefs, saves
 from ..core.common import human_size
 from ..dialogs import confirm, ensure_closed, error, info
 from ..widgets import Card, ElidedLabel
@@ -28,15 +29,18 @@ from .base import Page
 class SaveRow(QWidget):
     def __init__(self, entry: saves.SaveEntry, title: str) -> None:
         super().__init__()
+        # 同 GameRow：整行透明，点击才落到 viewport 上（否则点标题选不中）。
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 5, 8, 5)
         lay.setSpacing(2)
-        name = ElidedLabel(title, mode=Qt.ElideRight)
+        name = ElidedLabel(title, mode=Qt.ElideRight, selectable=False)
         name.setObjectName("Strong")
         meta = ElidedLabel(
             f"{entry.title_id} · {human_size(entry.size)} · "
             f"{time.strftime('%m-%d %H:%M', time.localtime(entry.mtime))}",
             mode=Qt.ElideRight,
+            selectable=False,
         )
         meta.setObjectName("Mono")
         lay.addWidget(name)
@@ -46,6 +50,7 @@ class SaveRow(QWidget):
 class BackupRow(QWidget):
     def __init__(self, item: saves.Backup) -> None:
         super().__init__()
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 5, 8, 5)
         lay.setSpacing(2)
@@ -111,6 +116,8 @@ class SavesPage(Page):
         title.setObjectName("SectionLabel")
         self.list = QListWidget()
         self.list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._show_menu)
         self.list.currentRowChanged.connect(lambda _: self._load_backups())
         card.body.addWidget(title)
         card.body.addWidget(self.list, 1)
@@ -193,8 +200,10 @@ class SavesPage(Page):
         self.list.clear()
         for entry in self.entries:
             item = QListWidgetItem()
-            row = SaveRow(entry, self._title_of(entry.title_id))
+            title = self._title_of(entry.title_id)
+            row = SaveRow(entry, title)
             item.setSizeHint(QSize(0, row.sizeHint().height() + 6))
+            item.setToolTip(f"{title}\n{entry.path}")
             self.list.addItem(item)
             self.list.setItemWidget(item, row)
         self.apply_state()
@@ -205,7 +214,39 @@ class SavesPage(Page):
         self.log(f"存档：{len(self.entries)} 个游戏")
 
     def _title_of(self, title_id: str) -> str:
-        return self._titles.get(title_id.upper(), f"游戏 {title_id}")
+        fallback = self._titles.get(title_id.upper(), "")
+        return prefs.display_title(self.state.cfg, title_id, fallback)
+
+    def _show_menu(self, pos) -> None:
+        row = self.list.indexAt(pos).row()
+        if row < 0 or row >= len(self.entries):
+            return
+        self.list.setCurrentRow(row)
+        entry = self.entries[row]
+        menu = QMenu(self)
+        menu.addAction("重命名…", lambda: self.rename_game(entry))
+        menu.addAction("打开存档所在目录", lambda: self.win.open_path(entry.path))
+        menu.addSeparator()
+        menu.addAction("刷新", self.reload)
+        menu.exec(self.list.viewport().mapToGlobal(pos))
+
+    def rename_game(self, entry: saves.SaveEntry) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        cfg = self.state.cfg
+        current = prefs.custom_title(cfg, entry.title_id) or self._title_of(entry.title_id)
+        name, ok = QInputDialog.getText(
+            self,
+            "重命名游戏",
+            f"显示名称（留空恢复默认）：\n按 TitleID {entry.title_id} 保存，启动页与金手指页同样生效",
+            text=current,
+        )
+        if not ok:
+            return
+        prefs.set_title(cfg, entry.title_id, name)
+        self.state.save()
+        self.reload()
+        self.log(f"重命名存档：{name.strip() or '（恢复默认）'}")
 
     def _backup_root(self) -> Path:
         return saves.backup_root(self.state.get("backup_dir") or None)
@@ -246,6 +287,7 @@ class SavesPage(Page):
             row = QListWidgetItem()
             widget = BackupRow(item)
             row.setSizeHint(QSize(0, widget.sizeHint().height() + 6))
+            row.setToolTip(f"{item.path.name}\n{item.path}")
             self.backup_list.addItem(row)
             self.backup_list.setItemWidget(row, widget)
         self.backup_list.setVisible(bool(self.backups))

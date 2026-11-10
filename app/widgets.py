@@ -60,12 +60,16 @@ def _rgb(hex_color: str) -> str:
 class ElidedLabel(QLabel):
     """超长路径自动省略中段，完整内容放在 tooltip。"""
 
-    def __init__(self, text: str = "", parent=None, mode=Qt.ElideMiddle):
+    def __init__(
+        self, text: str = "", parent=None, mode=Qt.ElideMiddle, selectable: bool = True
+    ):
         super().__init__(parent)
         self._full = text
         self._mode = mode
         self.setSizePolicy(self.sizePolicy().horizontalPolicy(), self.sizePolicy().verticalPolicy())
-        self.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # 列表行里的标签必须关掉文本选中：TextSelectableByMouse 会吃掉 press/release，
+        # 事件到不了 QListWidget 的 viewport，点文字区域就选不中行（双击也失效）。
+        self.setTextInteractionFlags(Qt.TextSelectableByMouse if selectable else Qt.NoTextInteraction)
         self.setMinimumWidth(80)
         self.setText(text)
 

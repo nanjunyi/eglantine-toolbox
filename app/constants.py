@@ -4,7 +4,7 @@
 因此 `core/` 层可以安全地 `from ..constants import ...` 而不引入 Qt 依赖。
 """
 
-VERSION = "2.1.0"
+VERSION = "2.1.1"
 
 # 便携配置文件名 = f"{APP_NAME}.json"（放在 exe 同级目录）
 APP_NAME = "Eglantine工具箱"
