@@ -26,7 +26,7 @@
 
 ## 快速开始
 
-1. 到 [Releases](https://github.com/nanjunyi/eglantine-toolbox/releases) 下载 `Eglantine工具箱.exe`
+1. 到 [Releases](https://github.com/nanjunyi/eglantine-toolbox/releases) 下载最新的 exe（`Eglantine-Toolbox-v2.1.0.exe`，运行后程序名是 `Eglantine工具箱`）
 2. 放进模拟器目录（和 `eglantine.exe` 同级），或者随便找个目录放都行
 3. 双击运行。首次启动会让你选模拟器目录；目录是空的也没关系，工具会走「全新安装」
 
