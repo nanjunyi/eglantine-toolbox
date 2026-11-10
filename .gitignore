@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.idea/
+.vscode/
+
+# 打包产物
+dist/
+build/work/
+build/build/
+*.manifest
+
+# 运行时生成
+logs/
+backups/
+_update/
+Eglantine工具箱.json
+Eglantine汉化工具.json
+config.json
+releases_cache.json
+gamelist.json
+*.zhbak
+*.disabled
+*.part
+*.log
