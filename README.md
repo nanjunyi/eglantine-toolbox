@@ -54,7 +54,7 @@ python -m PyInstaller build/build.spec --noconfirm --clean --distpath dist --wor
 产物 `dist/Eglantine工具箱.exe`，单文件、无控制台，约 45 MB。
 版本号要改两处：`app/constants.py` 的 `VERSION`、`build/version_info.txt` 的四元组。
 
-打 tag（`v*`）会触发 GitHub Actions 自动打包并把 exe 挂到 Release。
+发布：`gh release create vX.Y.Z "dist/Eglantine工具箱.exe" --title "vX.Y.Z"`。
 
 ## 配置与目录
 
