@@ -1,0 +1,31 @@
+{
+  "_说明": "汉化增量库。app/core/builder.py 会以「官方内置的 zh_CN.qm」为底本，用这里的条目覆盖/追加，再生成 languages/zh_CN.qm。升级新版本时本文件不需要改动，官方新增的译文会自动带上。",
+  "_如何修改": "改 translation 字段即可；想恢复官方原文就删掉对应条目。context/source 必须与程序里的完全一致。",
+  "messages": [
+    {
+      "context": "ConfigurationShared",
+      "source": "Patch Runtime NROs for NCE",
+      "translation": "为 NCE 修补运行时 NRO"
+    },
+    {
+      "context": "ConfigurationShared",
+      "source": "Applies NCE code patches to runtime-loaded NRO modules.This is required for some games to run correctly.",
+      "translation": "对运行时加载的 NRO 模块应用 NCE 代码补丁。部分游戏需要此项才能正常运行。"
+    },
+    {
+      "context": "ConfigurationShared",
+      "source": "GPU Readback Before NCE Invalidation",
+      "translation": "NCE 失效前进行 GPU 回读"
+    },
+    {
+      "context": "ConfigurationShared",
+      "source": "Flushes GPU buffer data back to guest memory before NCE invalidates the whole guest page, preserving it while the CPU store proceeds.",
+      "translation": "在 NCE 使整个客户机页面失效之前，将 GPU 缓冲区数据写回客户机内存，以便在 CPU 写入期间保留这些数据。"
+    },
+    {
+      "context": "ConfigurationShared",
+      "source": "Controls the GPU fence synchronization behavior.\nImmediate is the fastest option, but can introduce some issues.\nBalanced offers better compatibility and may fix issues in some games.\nAccurate further improves compatibility at the cost of some performance.\nDefault follows the GPU Mode setting.",
+      "translation": "控制 GPU 围栏的同步行为。\n即时：速度最快，但可能引入一些问题。\n平衡：兼容性更好，可能修复部分游戏中的问题。\n高精度：进一步提升兼容性，但会牺牲一些性能。\n系统默认：跟随「GPU 模式」设置。"
+    }
+  ]
+}
