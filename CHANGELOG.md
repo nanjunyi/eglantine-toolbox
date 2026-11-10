@@ -15,7 +15,6 @@
 - 旧版配置 `Eglantine汉化工具.json`（含 `%LOCALAPPDATA%\EglantineZhCN\config.json`）自动迁移，升级不丢设置
 - `README.md`、`CHANGELOG.md`、`LICENSE`（MIT）
 - `requirements.txt` / `requirements-dev.txt`
-- GitHub Actions：打 `v*` tag 自动打包并上传 Release
 
 ### 移除
 - 无用文件：`app/main_1_1_2.py.bak`、`app/settings_dialog.py`、`app/pages/placeholder.py`
