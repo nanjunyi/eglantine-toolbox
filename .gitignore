@@ -25,3 +25,7 @@ gamelist.json
 *.disabled
 *.part
 *.log
+
+# 便携工具与缓存（不入库）
+bin/
+cache/

@@ -67,6 +67,17 @@ class Page(QWidget):
     def apply_busy(self, busy: bool) -> None:  # 任务开始/结束时调用
         pass
 
+    def on_theme_changed(self) -> None:  # 切换白天/夜间时调用
+        pass
+
+    # ------------------------------------------------------------------ 主题
+    def refresh_badges(self, root: QWidget | None = None) -> None:
+        """控件级样式不会跟随全局 QSS，徽章必须自己重刷一次。"""
+        from ..widgets import Badge
+
+        for badge in (root or self).findChildren(Badge):
+            badge.refresh_theme()
+
     # ------------------------------------------------------------------ 便捷
     def log(self, text: str) -> None:
         self.win.log(text)

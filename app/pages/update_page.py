@@ -113,6 +113,7 @@ class UpdatePage(Page):
         line = QWidget()
         line.setFixedWidth(1)
         line.setStyleSheet(f"background: {theme.BORDER};")
+        self._divider = line
         cols.addWidget(line)
 
         self.lbl_remote_name = QLabel("—")
@@ -135,6 +136,13 @@ class UpdatePage(Page):
         cols.addLayout(target_col, 1)
 
         card.body.addLayout(cols)
+
+        # 数据来源 / 缓存年龄：接口被限流时用备用通道，必须让用户看见
+        self.source_line = QLabel("")
+        self.source_line.setObjectName("Hint")
+        self.source_line.setWordWrap(True)
+        self.source_line.setVisible(False)
+        card.body.addWidget(self.source_line)
         return card
 
     @staticmethod
@@ -199,6 +207,7 @@ class UpdatePage(Page):
             self.lbl_local_time.setText("—")
 
         self._refresh_verdict()
+        self._render_source()
         self.apply_busy(self.bus.busy())
 
     def apply_busy(self, busy: bool) -> None:
@@ -223,12 +232,34 @@ class UpdatePage(Page):
             self.verdict.setStyleSheet(f"color: {theme.MUTED};")
             self.btn_update.setText("一键更新并汉化")
             return
+
+        latest = self.state.releases[0] if self.state.releases else None
+        is_latest = latest is None or rel.same_release(latest.tag, target)
+        is_local = bool(info_obj and rel.same_release(info_obj.tag, target))
+        local_tag = _short(info_obj.tag, 20) if info_obj and info_obj.tag else "未识别"
+
         if not self.state.installed:
-            self._verdict(f"将全新安装 {target.channel_label} · {_short(target.tag, 22)}", theme.AMBER)
+            self._verdict(
+                f"将全新安装 {target.channel_label} · {_short(target.tag, 22)}", theme.AMBER
+            )
             self.btn_update.setText(f"安装 {_short(target.tag)} 并汉化")
-        elif info_obj and rel.same_release(info_obj.tag, target):
-            self._verdict("与本地版本一致", theme.GREEN)
+            return
+
+        if is_local and is_latest:
+            self._verdict("已是最新（本地 = 仓库最新）", theme.GREEN)
             self.btn_update.setText("重新应用汉化")
+            return
+
+        if is_local:
+            # 选中的就是本地这版，但仓库已经有更新的
+            self._verdict(
+                f"本地已是 {local_tag} · 仓库最新 {_short(latest.tag, 26)}", theme.AMBER
+            )
+            self.btn_update.setText(f"安装 {_short(latest.tag)} 并汉化")
+            return
+
+        if is_latest:
+            self._verdict(f"可升级到 {_short(target.tag, 26)} · 本地 {local_tag}", theme.AMBER)
         else:
             same_src = bool(
                 info_obj
@@ -241,9 +272,28 @@ class UpdatePage(Page):
             )
             note = "（同一 commit，仅打包时间不同）" if same_src else ""
             self._verdict(
-                f"将安装 {target.channel_label} · {_short(target.tag, 22)}{note}", theme.AMBER
+                f"将安装 {target.channel_label} · {_short(target.tag, 22)}"
+                + (f" · 最新 {_short(latest.tag, 24)}" if latest else "")
+                + note,
+                theme.AMBER,
             )
-            self.btn_update.setText(f"安装 {_short(target.tag)} 并汉化")
+        self.btn_update.setText(f"安装 {_short(target.tag)} 并汉化")
+
+    def _render_source(self) -> None:
+        """数据来源 / 缓存年龄：接口被限流时必须让用户看见，不能假装成功。"""
+        meta = self.state.release_meta
+        if meta is None or not meta.note:
+            self.source_line.setVisible(False)
+            return
+        if meta.source == "atom":
+            color = theme.AMBER
+        elif meta.stale:
+            color = theme.RED if meta.age > rel.CACHE_STALE_MAX else theme.AMBER
+        else:
+            color = theme.MUTED
+        self.source_line.setText(meta.note)
+        self.source_line.setStyleSheet(f"color: {color};")
+        self.source_line.setVisible(True)
 
     def _verdict(self, text: str, color: str) -> None:
         self.verdict.setText(text)
@@ -291,6 +341,12 @@ class UpdatePage(Page):
         self._refresh_verdict()
         self.apply_busy(self.bus.busy())
 
+    def on_theme_changed(self) -> None:
+        self.badge.refresh_theme()
+        self._divider.setStyleSheet(f"background: {theme.BORDER};")
+        self._refresh_verdict()
+        self._render_source()
+
     # ------------------------------------------------------------------ 检查更新
     def check_updates(self, silent: bool = False) -> None:
         if self.bus.busy():
@@ -301,16 +357,20 @@ class UpdatePage(Page):
 
         def task(prog):
             prog.stage("查询可选版本")
-            releases = rel.fetch_releases(use_cache=silent, log=prog.log)
-            items = rel.selectable(releases)
+            result = rel.fetch_releases(use_cache=silent, log=prog.log)
+            items = rel.selectable(result)
             if not items:
-                raise rel.ReleaseError("仓库里没有找到带 Windows 安装包的版本")
+                reason = result.meta.error or "网络异常"
+                raise rel.ReleaseError(f"没能确认任何可用安装包：{reason}")
             for item in items[:3]:
                 prog.log(f"  · {item.combo_text()}")
-            return items
+            return items, result.meta
 
-        def done(items):
-            self.state.set_releases(items)
+        def done(payload):
+            items, meta = payload
+            self.state.set_releases(items, meta)
+            if meta is not None and meta.note:
+                self.log(meta.note)
 
         if not silent:
             self.log("—— 检查更新 ——")
@@ -345,15 +405,19 @@ class UpdatePage(Page):
         same = self.state.same_as_local()
         if target is not None and not same:
             asset = target.windows_asset
-            size = human_size(asset.size) if asset else "未知大小"
+            size = human_size(asset.size) if asset is not None and asset.size else "未知大小"
+            warn = ""
+            if asset is not None and not asset.sha256:
+                warn = "\n该版本来自备用通道，没有官方 SHA-256，安装前会核对包内版本号。"
             where = "全新安装到" if fresh else "安装"
             if not confirm(
                 self,
                 "确认安装",
                 f"将{where} {target.channel_label}：{target.tag}"
                 + (f"（{target.name}）" if target.name and target.name != target.tag else "")
-                + f"\n安装包 {size}，下载完成后自动{'安装' if fresh else '覆盖安装'}并汉化。\n\n"
-                "用户配置（存档、按键、图形设置）保存在系统目录，不受影响。是否继续？",
+                + f"\n安装包 {size}，下载完成后自动{'安装' if fresh else '覆盖安装'}并汉化。"
+                + warn
+                + "\n\n用户配置（存档、按键、图形设置）保存在系统目录，不受影响。是否继续？",
                 "开始安装",
             ):
                 return

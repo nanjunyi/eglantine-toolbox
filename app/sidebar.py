@@ -44,6 +44,10 @@ class NavButton(QToolButton):
         color = theme.TEXT if checked or self.underMouse() else theme.MUTED
         self.setIcon(glyph_icon(name, color))
 
+    def refresh_icon(self) -> None:
+        """主题变了：图标 pixmap 是按颜色生成的，必须重画。"""
+        self._sync_icon(self.isChecked())
+
 
 class Sidebar(QFrame):
     selected = Signal(int)
@@ -112,6 +116,10 @@ class Sidebar(QFrame):
         if 0 <= index < len(self.buttons):
             self.buttons[index].setChecked(True)
             self.selected.emit(index)
+
+    def refresh_icons(self) -> None:
+        for btn in self.buttons:
+            btn.refresh_icon()
 
     def select_key(self, key: str) -> None:
         for i, btn in enumerate(self.buttons):

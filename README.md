@@ -19,14 +19,14 @@
 | **启动模拟器** | 读 `qt-config.ini` 里登记的游戏目录，按 TitleID 把 Base / 更新 / DLC 合并成一行；默认只显示**模拟器识别过**的游戏（可一键显示全部）。双击直接启动；右键可重命名、置顶、上移下移、隐藏、给没有 TitleID 的文件关联 TitleID |
 | **游戏存档** | 枚举 `nand\user\save\<容器>\<用户ID>\<TitleID>`，zip 快照备份 / 还原 / 导入 / 导出；还原前自动留一份快照，替换用「同卷临时目录 + 改名」，失败可回滚；游戏名取自模拟器日志，可右键改名 |
 | **金手指** | 按游戏管理 `load\<TitleID>\cheats\<build_id>.txt`；多套方案并存、随时切换生效、启停不产生垃圾文件；build_id 自动从模拟器日志推断，也可手填 |
-| **更新与汉化** | 查上游每日构建 / 发行版，断点续传 + SHA-256 校验 + 加速源；装完自动生成中文语言包。支持对**空目录**全新安装 |
-| **设置** | 网络（系统代理 / 加速源 / 测试连接）、路径（模拟器目录 / 备份目录 / 数据目录）、维护（清理更新缓存、修复存档残留）、关于 |
+| **更新与汉化** | 查上游每日构建 / 发行版；GitHub API 被限流时自动切 `releases.atom` 备用通道（不占配额），两条都失败才用缓存并标出缓存年龄；断点续传 + SHA-256 校验 + 加速源；装完自动生成中文语言包。支持对**空目录**全新安装 |
+| **设置** | 外观（夜间 / 白天 / 跟随系统，立即生效）、网络（系统代理 / 加速源 / 测试连接）、路径（模拟器目录 / 备份目录 / 数据目录）、维护（清理更新缓存、修复存档残留）、关于 |
 
 底部是全局状态栏与可折叠日志抽屉，五页共用；任务统一走后台线程，下载中可取消。
 
 ## 快速开始
 
-1. 到 [Releases](https://github.com/nanjunyi/eglantine-toolbox/releases) 下载最新的 exe（`Eglantine-Toolbox-v2.1.0.exe`，运行后程序名是 `Eglantine工具箱`）
+1. 到 [Releases](https://github.com/nanjunyi/eglantine-toolbox/releases) 下载最新的 exe（`Eglantine-Toolbox-v2.2.0.exe`，运行后程序名是 `Eglantine工具箱`）
 2. 放进模拟器目录（和 `eglantine.exe` 同级），或者随便找个目录放都行
 3. 双击运行。首次启动会让你选模拟器目录；目录是空的也没关系，工具会走「全新安装」
 
@@ -60,10 +60,11 @@ python -m PyInstaller build/build.spec --noconfirm --clean --distpath dist --wor
 
 | 位置 | 内容 | 说明 |
 |---|---|---|
-| `Eglantine工具箱.json`（exe 同级） | 安装目录、选中版本、网络设置、备份目录、窗口大小 | 便携配置；目录不可写时退到 `%LOCALAPPDATA%\EglantineToolbox\config.json` |
+| `Eglantine工具箱.json`（exe 同级） | 安装目录、选中版本、外观主题、网络设置、备份目录、窗口大小 | 便携配置；目录不可写时退到 `%LOCALAPPDATA%\EglantineToolbox\config.json` |
 | `logs\tool-YYYYMMDD.log` | 运行日志 | 出问题时先看这个 |
 | `backups\saves\<TitleID>\` | 存档快照 zip | 默认在工具目录，可在设置页改 |
 | `_update\` | 更新下载与解压临时目录 | 装完自动清理 |
+| `%LOCALAPPDATA%\EglantineToolbox\releases_cache.json` | 版本列表缓存 | 断网时兜底用，删掉会重建 |
 
 **从 2.0.x 升级**：旧配置 `Eglantine汉化工具.json` 会被自动读取并写入新名字，设置不会丢；旧文件和 `%LOCALAPPDATA%\EglantineZhCN\` 都可以手动删掉（缓存会重建）。
 

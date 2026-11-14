@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import QMessageBox, QWidget
 
 from .core import installer
+from .wintitle import apply_titlebar
 
 
 def message(parent: QWidget, title: str, text: str, ok: str, icon) -> None:
@@ -13,6 +14,7 @@ def message(parent: QWidget, title: str, text: str, ok: str, icon) -> None:
     box.setText(text)
     box.setIcon(icon)
     box.addButton(ok, QMessageBox.AcceptRole)
+    apply_titlebar(box)
     box.exec()
 
 
@@ -31,6 +33,7 @@ def confirm(parent: QWidget, title: str, text: str, ok: str = "继续") -> bool:
     box.setIcon(QMessageBox.Question)
     yes = box.addButton(ok, QMessageBox.AcceptRole)
     box.addButton("取消", QMessageBox.RejectRole)
+    apply_titlebar(box)
     box.exec()
     return box.clickedButton() is yes
 

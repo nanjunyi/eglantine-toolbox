@@ -26,6 +26,7 @@ class AppState(QObject):
         self.status: dict = {"exists": False, "patched": False, "zh_pack": False}
         self.releases: list[rel.Release] = []
         self.target: rel.Release | None = None
+        self.release_meta: rel.FetchMeta | None = None
 
     # ------------------------------------------------------------------ 配置
     def save(self) -> None:
@@ -84,14 +85,22 @@ class AppState(QObject):
         self.changed.emit()
 
     # ------------------------------------------------------------------ 版本
-    def set_releases(self, items: list[rel.Release]) -> None:
+    def set_releases(self, items: list[rel.Release], meta: "rel.FetchMeta | None" = None) -> None:
         self.releases = items
+        self.release_meta = meta
         wanted = self.cfg.get("selected_tag", "")
         chosen = None
         for item in items:
             if item.tag == wanted:
                 chosen = item
                 break
+        # 用户选的恰好是本地这一版、而仓库已有更新 → 自动跳到最新，
+        # 否则下拉框永远停在旧 tag，看起来像「没有新版本」。
+        # 用户故意选别的版本（回归测试 / branch 构建）时保持不动。
+        if chosen is not None and items and chosen is not items[0]:
+            local_tag = self.info.tag if self.info is not None else ""
+            if local_tag and rel.same_release(local_tag, chosen):
+                chosen = None
         self.target = chosen or (items[0] if items else None)
         if self.target is not None:
             self.cfg["selected_tag"] = self.target.tag

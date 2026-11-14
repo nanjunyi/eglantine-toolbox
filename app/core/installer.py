@@ -357,7 +357,7 @@ def _check_staged_version(stage: Path, target: "rel.Release", zip_path: Path, pr
     """核对包内 exe 的版本号，防止 CDN / 加速源返回了旧包。
 
     规则只有一条：包内 tag 能读到且与目标不同 → 判定串包（清掉安装包后中止）；
-    读不到 tag 就记日志放行（下载时 SHA-256 已经校验过）。
+    读不到 tag 就记日志放行（API 通道下载时 SHA-256 已校验过，Atom 通道没有摘要）。
     **不再用 commit 兜底**：正式版的 release body 里往往没有 commit，
     而同一个 commit 的 daily 与正式版是两次不同的编译。
     """
@@ -377,7 +377,11 @@ def _check_staged_version(stage: Path, target: "rel.Release", zip_path: Path, pr
     progress.log(f"包内版本 {detail}")
 
     if not info.tag:
-        progress.log("包内版本无法识别，跳过版本比对（安装包 SHA-256 已校验）")
+        verified = bool(target.windows_asset and target.windows_asset.sha256)
+        progress.log(
+            "包内版本无法识别，跳过版本比对"
+            + ("（安装包 SHA-256 已校验）" if verified else "（本包无官方摘要，未做 SHA 校验）")
+        )
         return
     if rel.same_tag(target.tag, info.tag):
         return

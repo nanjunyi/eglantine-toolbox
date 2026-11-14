@@ -25,11 +25,18 @@ from ..constants import USER_AGENT
 from .common import Cancelled, human_size, human_speed, sha256_file
 
 API_BASE = "https://api.github.com/repos/Eglantine-Community/Eglantine/releases"
+ATOM_URL = "https://github.com/Eglantine-Community/Eglantine/releases.atom"
+DOWNLOAD_BASE = "https://github.com/Eglantine-Community/Eglantine/releases/download"
 ASSET_NAME = "eglantine-windows-x86_64.zip"
 
 _DAILY_TAG = re.compile(r"^daily-(\d{8})$")
 _BODY_COMMIT = re.compile(r"at `([0-9a-f]{7,40})`")
 _CACHE_TTL = 600  # 秒
+# 缓存超过这个年龄就不能再当「最新」用，只能标红提示
+CACHE_STALE_MAX = 3 * 86400
+# Atom 通道下最多对几条发 HEAD 问大小（每条 200~400ms）
+_HEAD_LIMIT = 6
+_SCHEMA = 2
 
 
 class ReleaseError(RuntimeError):
@@ -149,6 +156,47 @@ def _tag_date(tag: str) -> datetime | None:
         return None
 
 
+@dataclass(frozen=True)
+class FetchMeta:
+    """一次拉取的元信息：数据从哪来、是否过期、给人看的提示。"""
+
+    source: str = "cache"  # api | atom | cache
+    stale: bool = False
+    age: int = 0  # 缓存年龄（秒）；联网成功为 0
+    note: str = ""  # 直接显示在界面上的那句话
+    error: str = ""  # 失败原因，写日志 / 弹窗用
+
+
+@dataclass
+class FetchResult:
+    """版本列表 + 来源信息。实现 __iter__，旧的 selectable(...) 调用点无需改动。"""
+
+    releases: list[Release]
+    meta: FetchMeta
+
+    def __iter__(self):
+        return iter(self.releases)
+
+    def __len__(self) -> int:
+        return len(self.releases)
+
+    def __getitem__(self, index):
+        return self.releases[index]
+
+
+def _ago(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 90:
+        return f"{seconds} 秒"
+    minutes = seconds // 60
+    if minutes < 90:
+        return f"{minutes} 分钟"
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours} 小时"
+    return f"{hours // 24} 天"
+
+
 # --------------------------------------------------------------------------- 网络
 
 _SSL_CONTEXTS: list[ssl.SSLContext] | None = None
@@ -191,16 +239,23 @@ def _opener(ctx: ssl.SSLContext):
     return urllib.request.build_opener(*handlers)
 
 
-def _open(url: str, headers: dict | None = None, timeout: int = 25, retries: int = 1):
+def _open(
+    url: str,
+    headers: dict | None = None,
+    timeout: int = 25,
+    retries: int = 1,
+    method: str = "GET",
+    allow_mirror: bool = True,
+):
     hdrs = {"User-Agent": USER_AGENT, "Accept": "*/*"}
     if headers:
         hdrs.update(headers)
 
     last: Exception | None = None
-    for candidate in _candidates(url):
+    for candidate in (_candidates(url) if allow_mirror else [url]):
         for attempt in range(retries + 1):
             for ctx in _ssl_contexts():
-                req = urllib.request.Request(candidate, headers=hdrs)
+                req = urllib.request.Request(candidate, headers=hdrs, method=method)
                 try:
                     return _opener(ctx).open(req, timeout=timeout)
                 except ssl.SSLError as exc:
@@ -258,40 +313,107 @@ def _cache_file() -> Path:
     return config_dir() / "releases_cache.json"
 
 
-def fetch_releases(use_cache: bool = True, log=print) -> list[Release]:
-    cache = _cache_file()
-    stale: list | None = None
-    if cache.exists():
-        try:
-            raw = json.loads(cache.read_text(encoding="utf-8"))
-            stale = raw.get("releases") or None
-            if use_cache and time.time() - float(raw.get("ts", 0)) < _CACHE_TTL:
-                return [_release_from_json(r) for r in stale or []]
-        except Exception:
-            stale = None
-
+def _read_cache(cache: Path) -> tuple[list, float, str] | None:
+    """返回 (原始 release 列表, 写入时间戳, 来源)；读不到返回 None。"""
+    if not cache.exists():
+        return None
     try:
-        payload = _fetch_payload(log)
-    except ReleaseError:
-        if stale:
-            log("网络请求失败，改用上次缓存的版本列表（可能不是最新）")
-            return [_release_from_json(r) for r in stale]
-        raise
+        raw = json.loads(cache.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    items = raw.get("releases") if isinstance(raw, dict) else None
+    if not isinstance(items, list) or not items:
+        return None
+    try:
+        ts = float(raw.get("ts") or 0)
+    except (TypeError, ValueError):
+        ts = 0.0
+    return items, ts, str(raw.get("source") or "cache")
 
-    releases = [_release_from_json(r) for r in payload if isinstance(r, dict)]
+
+def _write_cache(cache: Path, payload: list, source: str) -> None:
     try:
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(
-            json.dumps({"ts": time.time(), "releases": payload}, ensure_ascii=False),
+            json.dumps(
+                {"schema": _SCHEMA, "source": source, "ts": time.time(), "releases": payload},
+                ensure_ascii=False,
+            ),
             encoding="utf-8",
         )
     except Exception:
         pass
-    log(f"已从仓库获取 {len(releases)} 个版本记录")
-    return releases
 
 
-def _fetch_payload(log) -> list:
+def fetch_releases(use_cache: bool = True, log=print) -> FetchResult:
+    """拿版本列表：GitHub API → 失败自动切 releases.atom → 都失败才用缓存。
+
+    GitHub 未登录接口每 IP 每小时只给 60 次，被限流时 API 必然 403；
+    releases.atom 不占配额，代价是没有官方 SHA-256。
+    """
+    cache = _cache_file()
+    cached = _read_cache(cache)
+
+    if cached and use_cache:
+        items, ts, source = cached
+        age = int(max(0, time.time() - ts))
+        if age < _CACHE_TTL:
+            return FetchResult(
+                [_release_from_json(r) for r in items],
+                FetchMeta(source=source, age=age, note=f"列表来自 {_ago(age)}前的缓存"),
+            )
+
+    api_error = ""
+    try:
+        payload = _fetch_api(log)
+        source = "api"
+    except ReleaseError as exc:
+        api_error = str(exc)
+        log(f"GitHub 接口不可用：{api_error}")
+        log("改用备用通道 releases.atom（不占接口配额）…")
+        try:
+            payload = _fetch_atom(log)
+            source = "atom"
+        except ReleaseError as exc2:
+            atom_error = str(exc2)
+            log(f"备用通道也不可用：{atom_error}")
+            if cached:
+                items, ts, _ = cached
+                age = int(max(0, time.time() - ts))
+                if age <= CACHE_STALE_MAX:
+                    note = f"网络异常，显示 {_ago(age)}前的缓存列表（可能不是最新）"
+                else:
+                    note = f"缓存已过期（{_ago(age)}前），网络请求失败：{api_error}"
+                log(note)
+                return FetchResult(
+                    [_release_from_json(r) for r in items],
+                    FetchMeta(
+                        source="cache",
+                        stale=True,
+                        age=age,
+                        note=note,
+                        error=f"接口：{api_error}；备用：{atom_error}",
+                    ),
+                )
+            raise ReleaseError(
+                f"无法获取版本列表。GitHub 接口：{api_error}；备用通道：{atom_error}"
+            ) from exc2
+
+    releases = [_release_from_json(r) for r in payload if isinstance(r, dict)]
+    _write_cache(cache, payload, source)
+    if source == "api":
+        log(f"已从仓库获取 {len(releases)} 个版本记录（API）")
+        note = "数据来源：GitHub API · 官方 SHA-256 可用"
+    else:
+        log(f"已从仓库获取 {len(releases)} 个版本记录（备用通道）")
+        note = "数据来源：备用通道 releases.atom（接口被限流或不可用）· 无官方校验值"
+    return FetchResult(
+        releases,
+        FetchMeta(source=source, age=0, note=note, error=api_error),
+    )
+
+
+def _fetch_api(log) -> list:
     last_error: Exception | None = None
     # 每条 release 都带完整 changelog，页数越大响应越大；网络不稳时自动降页重试
     for per_page in (15, 8, 4):
@@ -299,13 +421,125 @@ def _fetch_payload(log) -> list:
         try:
             log(f"正在查询 GitHub Releases（取前 {per_page} 条）…")
             with _open(url, {"Accept": "application/vnd.github+json"}, timeout=25) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                data = json.loads(resp.read().decode("utf-8"))
+            if isinstance(data, list):
+                return data
+            # 403 / 404 等错误体是 dict，别当成版本列表
+            raise ReleaseError(str(data.get("message") or "接口返回了非预期内容"))
+        except ReleaseError:
+            raise
         except (HTTPException, json.JSONDecodeError, UnicodeDecodeError) as exc:
             last_error = exc
             time.sleep(0.8)
-        except ReleaseError as exc:
-            raise ReleaseError(str(exc)) from exc
+        except AttributeError as exc:
+            last_error = exc
+            break
     raise ReleaseError(_friendly_error(last_error))
+
+
+def _fetch_atom(log) -> list[dict]:
+    """备用通道：releases.atom 不占 API 配额，但没有摘要与 changelog。"""
+    log("正在读取 releases.atom …")
+    with _open(
+        ATOM_URL,
+        {"Accept": "application/atom+xml"},
+        timeout=15,
+        allow_mirror=False,
+    ) as resp:
+        raw = resp.read()
+    entries = _atom_entries(raw)
+    if not entries:
+        raise ReleaseError("备用通道没有返回任何版本记录")
+    return _enrich_sizes(entries, log)
+
+
+_ATOM_NS = "{http://www.w3.org/2005/Atom}"
+
+
+def _atom_entries(raw: bytes) -> list[dict]:
+    """把 Atom feed 解析成与 GitHub API 同形状的 dict，后面复用同一套解析。"""
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as exc:
+        raise ReleaseError(f"备用通道返回内容无法解析：{exc}") from exc
+
+    out: list[dict] = []
+    for entry in root.findall(f"{_ATOM_NS}entry"):
+        tag = (entry.findtext(f"{_ATOM_NS}id") or "").strip().rsplit("/", 1)[-1].strip()
+        if not tag:
+            continue
+        if not (_DAILY_TAG.match(tag) or tag.startswith("branch-") or tag.startswith("v")):
+            continue
+        updated = (entry.findtext(f"{_ATOM_NS}updated") or "").strip()
+        title = (entry.findtext(f"{_ATOM_NS}title") or "").strip() or tag
+        out.append(
+            {
+                "tag_name": tag,
+                "name": title,
+                "published_at": updated,
+                "body": "",  # Atom 的 content 是转义 HTML，塞进去会污染 commit 解析
+                "prerelease": False,
+                "assets": [
+                    {
+                        "name": ASSET_NAME,
+                        "size": 0,  # 由 _enrich_sizes 补
+                        "browser_download_url": f"{DOWNLOAD_BASE}/{tag}/{ASSET_NAME}",
+                        "digest": "",  # 备用通道没有官方摘要
+                    }
+                ],
+            }
+        )
+    return out
+
+
+def _head_size(tag: str) -> int | None:
+    """问一下资产有多大。None = 确定没这个资产；0 = 有但拿不到长度（超时等）。"""
+    url = f"{DOWNLOAD_BASE}/{tag}/{ASSET_NAME}"
+    hdrs = {"User-Agent": USER_AGENT, "Accept": "*/*"}
+    for ctx in _ssl_contexts():
+        req = urllib.request.Request(url, headers=hdrs, method="HEAD")
+        try:
+            with _opener(ctx).open(req, timeout=6) as resp:
+                raw = resp.headers.get("Content-Length") or "0"
+                try:
+                    return int(raw)
+                except (TypeError, ValueError):
+                    return 0
+        except urllib.error.HTTPError as exc:
+            if exc.code in (403, 404):
+                return None
+            return 0
+        except ssl.SSLError:
+            continue
+        except Exception:
+            return 0
+    return 0
+
+
+def _enrich_sizes(entries: list[dict], log=print) -> list[dict]:
+    """给 Atom 条目补安装包大小；顺带过滤掉确实没有 Windows 包/不该出现的条目。"""
+    kept: list[dict] = []
+    net_fail = 0
+    for index, entry in enumerate(entries):
+        tag = entry.get("tag_name", "")
+        if not tag:
+            continue
+        if tag.endswith("-debug") or "pgo" in tag.lower():
+            continue
+        if index >= _HEAD_LIMIT or net_fail >= 2:
+            kept.append(entry)  # 不再探大小，交给下载时读 Content-Length
+            continue
+        size = _head_size(tag)
+        if size is None:
+            log(f"  · {tag} 没有 Windows 安装包，跳过")
+            continue
+        if size == 0:
+            net_fail += 1
+        entry["assets"][0]["size"] = size
+        kept.append(entry)
+    return kept
 
 
 def _release_from_json(raw: dict) -> Release:

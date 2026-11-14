@@ -28,6 +28,7 @@ from .appstate import AppState
 from .constants import APP_ID, APP_NAME, DISPLAY_NAME
 from .core import buildinfo, config, installer, release
 from .core.common import app_dir
+from .wintitle import apply_titlebar
 from .dialogs import error
 from .icon import app_icon
 from .pages.base import Page
@@ -113,6 +114,9 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._wire_bus()
+        hints = QApplication.styleHints()
+        if hasattr(hints, "colorSchemeChanged"):
+            hints.colorSchemeChanged.connect(self._on_system_scheme)
         QTimer.singleShot(60, self._bootstrap)
 
     # ------------------------------------------------------------------ 布局
@@ -330,12 +334,37 @@ class MainWindow(QMainWindow):
             error(self, "启动失败", str(exc))
             return False
 
+    # ------------------------------------------------------------------ 主题
+    def apply_theme(self) -> None:
+        """切换主题：全局 QSS → 侧栏图标 → 各页控件级样式 → 标题栏。
+
+        顺序不能反：控件级 setStyleSheet 优先级高于应用级，
+        先刷控件级再用新 QSS 覆盖，那些控件的基色就不是新的了。
+        """
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(theme.stylesheet())
+        try:
+            self.sidebar.refresh_icons()
+        except Exception:
+            pass
+        for page in self.pages.values():
+            page.on_theme_changed()
+        apply_titlebar(self, theme.is_dark())
+        self.update()
+
+    def _on_system_scheme(self, *_args) -> None:
+        """系统深浅色变了：只有「跟随系统」时才跟着动。"""
+        if theme.mode() != "system":
+            return
+        self.apply_theme()
+
     # ------------------------------------------------------------------ 关闭
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
         if not getattr(self, "_titlebar_done", False):
             self._titlebar_done = True
-            apply_dark_titlebar(self)
+            apply_titlebar(self, theme.is_dark())
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self.bus.busy():
@@ -359,41 +388,12 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
-def apply_dark_titlebar(window: QWidget) -> bool:
-    """Windows 10/11 的标题栏跟随暗色（否则顶部一条白杠很割裂）。
-
-    走 DWM：先开 immersive dark mode，再（Win11）把标题栏/边框染成窗口底色。
-    任何一步失败都静默跳过，不影响使用。
-    """
-    if sys.platform != "win32":
-        return False
-    try:
-        import ctypes
-
-        hwnd = int(window.winId())
-        dwm = ctypes.windll.dwmapi
-
-        def set_attr(attr: int, value: int) -> None:
-            data = ctypes.c_int(value)
-            dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(data), ctypes.sizeof(data))
-
-        # 20 = DWMWA_USE_IMMERSIVE_DARK_MODE（旧版系统是 19）
-        set_attr(20, 1)
-        set_attr(19, 1)
-        # 35 = DWMWA_CAPTION_COLOR, 34 = DWMWA_BORDER_COLOR（Win11 才支持，失败无妨）
-        caption = 0x001A1614  # COLORREF(0x00BBGGRR) ← #14161a
-        set_attr(35, caption)
-        set_attr(34, 0x002B2F39)
-        return True
-    except Exception:
-        return False
-
-
 def run() -> int:
     QApplication.setApplicationName(APP_NAME)
     QApplication.setOrganizationName(APP_ID)
     app = QApplication(sys.argv)
     app.setFont(QFont("Microsoft YaHei UI", 10))
+    theme.set_mode(config.load_config().get("theme", "dark"))
     app.setStyleSheet(theme.stylesheet())
     app.setWindowIcon(app_icon())
 

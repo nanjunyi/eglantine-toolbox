@@ -26,22 +26,22 @@ class Card(QFrame):
 
 
 class Badge(QLabel):
-    COLORS = {
-        "ok": theme.GREEN,
-        "warn": theme.AMBER,
-        "muted": theme.MUTED,
-        "info": theme.ACCENT,
-        "error": theme.RED,
-    }
+    KINDS = {"ok": "GREEN", "warn": "AMBER", "muted": "MUTED", "info": "ACCENT", "error": "RED"}
 
     def __init__(self, text: str = "", kind: str = "muted", parent=None):
         super().__init__(text, parent)
         self.setObjectName("Badge")
         self.setAlignment(Qt.AlignCenter)
+        self._state = (text, kind)
         self.set_state(text, kind)
 
+    def color_of(self, kind: str) -> str:
+        return getattr(theme.current(), self.KINDS.get(kind, "MUTED"), theme.current().MUTED)
+
     def set_state(self, text: str, kind: str = "muted") -> None:
-        color = self.COLORS.get(kind, theme.MUTED)
+        # 颜色在调用时取，不缓存 —— 否则切主题后还是旧色
+        color = self.color_of(kind)
+        self._state = (text, kind)
         self.setText(text)
         self.setStyleSheet(
             f"background: rgba({_rgb(color)}, 0.16);"
@@ -49,6 +49,9 @@ class Badge(QLabel):
             f"border: 1px solid rgba({_rgb(color)}, 0.35);"
             "border-radius: 10px; padding: 4px 12px; font-weight: 600;"
         )
+
+    def refresh_theme(self) -> None:
+        self.set_state(*self._state)
 
 
 def _rgb(hex_color: str) -> str:

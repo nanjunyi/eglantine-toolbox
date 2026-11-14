@@ -579,6 +579,13 @@ class LaunchPage(Page):
         self.btn_stop.setEnabled(running)
         self._sync_buttons()
 
+    def on_theme_changed(self) -> None:
+        self._poll()  # run_label 的颜色是控件级样式，顺手重设
+        for i in range(self.list.count()):
+            widget = self.list.itemWidget(self.list.item(i))
+            if widget is not None:
+                self.refresh_badges(widget)
+
     def _sync_buttons(self) -> None:
         installed = self.state.installed
         has_pick = self.selected_game() is not None

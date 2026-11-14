@@ -150,6 +150,10 @@ class CheatsPage(Page):
     def apply_state(self) -> None:
         pass
 
+    def on_theme_changed(self) -> None:
+        self.build_state.refresh_theme()
+        self.refresh_badges()
+
     def reload(self) -> None:
         titles: dict[str, str] = {}
         try:

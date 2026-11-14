@@ -1,4 +1,4 @@
-"""设置页：网络、路径、维护、关于。"""
+"""设置页：外观、网络、路径、维护、关于。"""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from ..core import release as rel
 from ..core.common import human_size
 from ..dialogs import confirm, error, info
 from ..widgets import Card, ElidedLabel
+from ..widgets import ComboBox
 from .base import Page
 
 
@@ -30,13 +31,54 @@ class SettingsPage(Page):
     key = "settings"
 
     def __init__(self, win) -> None:
-        super().__init__(win, "设置", "网络、路径与维护")
+        super().__init__(win, "设置", "外观、网络、路径与维护")
+        self.body.addWidget(self._build_appearance())
         self.body.addWidget(self._build_network())
         self.body.addWidget(self._build_paths())
         self.body.addWidget(self._build_misc())
         self.body.addWidget(self._build_about())
         self.body.addStretch(1)
         self.state.changed.connect(self.apply_state)
+
+    # ------------------------------------------------------------------ 外观
+    def _build_appearance(self) -> Card:
+        card = Card(margins=(16, 12, 16, 12), spacing=10)
+        cap = QLabel("外观")
+        cap.setObjectName("SectionLabel")
+        card.body.addWidget(cap)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.combo_theme = ComboBox()
+        self.combo_theme.setMinimumWidth(180)
+        for key in theme.MODES:
+            self.combo_theme.addItem(theme.MODE_LABELS[key], key)
+        self.combo_theme.currentIndexChanged.connect(self._on_theme_pick)
+        row.addWidget(self.combo_theme)
+        self.theme_hint = QLabel("")
+        self.theme_hint.setObjectName("Hint")
+        row.addWidget(self.theme_hint, 1)
+        card.body.addLayout(row)
+        return card
+
+    def _on_theme_pick(self, index: int) -> None:
+        value = self.combo_theme.itemData(index)
+        if not value or value == theme.mode():
+            return
+        applied = theme.set_mode(value)
+        self.state.cfg["theme"] = applied
+        self.state.save()
+        self.win.apply_theme()
+        self._sync_theme_hint()
+        self.log(f"外观已切换为 {theme.MODE_LABELS.get(applied, applied)}")
+
+    def _sync_theme_hint(self) -> None:
+        actual = "夜间" if theme.current().is_dark else "白天"
+        mode = theme.mode()
+        if mode == "system":
+            self.theme_hint.setText(f"跟随 Windows 的浅色/深色设置，当前生效：{actual}")
+        else:
+            self.theme_hint.setText(f"当前生效：{actual}")
 
     # ------------------------------------------------------------------ 网络
     def _build_network(self) -> Card:
@@ -184,6 +226,12 @@ class SettingsPage(Page):
         self.edit_mirror.setText(cfg.get("mirror", ""))
         self.chk_launch_after.setChecked(bool(cfg.get("launch_after", False)))
         self.edit_backup.setText(cfg.get("backup_dir", ""))
+        mode = theme.set_mode(str(cfg.get("theme", "dark")))
+        self.combo_theme.blockSignals(True)
+        index = self.combo_theme.findData(mode)
+        self.combo_theme.setCurrentIndex(max(0, index))
+        self.combo_theme.blockSignals(False)
+        self._sync_theme_hint()
         self.apply_state()
 
     def apply_state(self) -> None:
