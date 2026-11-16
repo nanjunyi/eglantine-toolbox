@@ -280,19 +280,54 @@ def install_state(install_dir: Path) -> dict:
     install = Path(install_dir)
     exe = install / EXE
     qm = install / "languages" / "zh_CN.qm"
-    patched = patcher.state(exe) == "patched"
+    exe_state = patcher.state(exe)
+    patched = exe_state == "patched"
     zh_exists = qm.exists()
     lang = current_language()
+    zh_lang = lang.lower() in ("zh_cn", "zh-cn", "zh")
     return {
         "exists": exe.exists(),
         "patched": patched,
+        "exe_state": exe_state,
         "zh_pack": zh_exists,
         "language": lang,
-        "localized": patched and zh_exists and lang.lower() in ("zh_cn", "zh-cn", "zh"),
+        # 新版可能不再需要改写语言路径（补丁无可改处），此时中文由内嵌语言包提供，
+        # 只要语言包在位 + 界面语言是中文就算已汉化，不能因为 patched=False 误报未汉化
+        "localized": zh_exists and zh_lang,
     }
 
 
 # --------------------------------------------------------------------------- 汉化
+
+
+def _describe_probe(info: dict) -> str:
+    st = info["state"]
+    if st == "no-anchor":
+        return "这个版本没有「语言路径」特征，将不改写 exe（中文由程序内嵌语言包提供）"
+    if st == "patched":
+        return f"包内 exe 已改写过语言路径（{info['patched']} 处），无需重复改写"
+    return f"语言路径特征 {info['orig']} 处，装完会改写成 ./languages"
+
+
+def _preflight(exe: Path, progress) -> dict:
+    """安装前的只读体检：补丁锚点 + 内嵌中文语言包。
+
+    在覆盖安装之前调用，把「特征对不上」「包内没有中文包」这类必然失败的问题挡在
+    写盘之前，避免装到一半回滚、留下新旧文件混杂的目录。
+    """
+    exe = Path(exe)
+    info = patcher.probe(exe)
+    progress.log(_describe_probe(info))
+    if info["state"] == "unknown":
+        raise InstallError(
+            "安装包里的 exe 语言路径状态可疑（已改写与未改写并存），已中止，未修改任何文件。"
+        )
+    packs = extract.extract_packs(exe)
+    if builder.LANG not in packs:
+        raise InstallError(
+            f"安装包里的 {exe.name} 没有内嵌 {builder.LANG} 语言包，无法汉化，已中止，未修改任何文件。"
+        )
+    return {"probe": info, "zh_size": len(packs[builder.LANG])}
 
 
 def localize(install_dir: Path, overrides: Path, progress) -> dict:
@@ -302,7 +337,9 @@ def localize(install_dir: Path, overrides: Path, progress) -> dict:
         raise InstallError(f"找不到 {exe}")
 
     progress.stage("应用汉化补丁")
-    patcher.apply_patch(exe, log=progress.log)
+    hits = patcher.apply_patch(exe, log=progress.log)
+    if hits == 0 and patcher.probe(exe)["state"] == "no-anchor":
+        progress.log("未改写 exe；界面中文将由程序内嵌语言包提供")
 
     progress.stage("生成中文语言包")
     out = install / "languages" / "zh_CN.qm"
@@ -445,6 +482,11 @@ def update_and_localize(
         # 3) 校验包内版本，避免 CDN / 加速源串版本
         _check_staged_version(stage, target, zip_path, progress)
 
+        # 3.5) 只读预检：补丁锚点 + 内嵌中文包。必须在覆盖安装之前跑，
+        #      否则汉化阶段才失败，就只能回滚 exe、留下新旧混杂的目录
+        progress.stage("预检安装包")
+        _preflight(stage / EXE, progress)
+
         # 4) 备份当前状态（全新安装没有旧版本可备份）
         if fresh:
             progress.stage("全新安装（无需备份）")
@@ -475,6 +517,10 @@ def update_and_localize(
                         shutil.copy2(old_bak, patcher.backup_path(exe))
                 except Exception as exc:
                     progress.log(f"回滚失败：{exc}")
+                progress.log(
+                    "注意：exe 已滚回旧版，但其它文件已是新版；"
+                    "重跑一次「安装并汉化」可让整份目录回到同一版本"
+                )
             else:
                 progress.log("汉化失败，正在回退为官方原版…")
                 try:
